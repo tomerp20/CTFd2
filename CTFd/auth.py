@@ -1,6 +1,7 @@
 import base64  # noqa: I001
 
 import requests
+import boto3
 from flask import Blueprint, abort
 from flask import current_app as app
 from flask import redirect, render_template, request, session, url_for
@@ -433,30 +434,20 @@ def login():
 
 @auth.route("/oauth")
 def oauth_login():
-    endpoint = (
-        get_app_config("OAUTH_AUTHORIZATION_ENDPOINT")
-        or get_config("oauth_authorization_endpoint")
-        or "https://auth.majorleaguecyber.org/oauth/authorize"
-    )
+    cognito_domain = get_config("cognito_domain")
+    client_id = get_config("cognito_app_client_id")
+    redirect_uri = url_for("auth.oauth_redirect", _external=True)
+    scope = "openid profile email"
 
-    if get_config("user_mode") == "teams":
-        scope = "profile team"
-    else:
-        scope = "profile"
-
-    client_id = get_app_config("OAUTH_CLIENT_ID") or get_config("oauth_client_id")
-
-    if client_id is None:
+    if not cognito_domain or not client_id:
         error_for(
             endpoint="auth.login",
-            message="OAuth Settings not configured. "
-            "Ask your CTF administrator to configure MajorLeagueCyber integration.",
+            message="AWS Cognito settings not configured. "
+            "Please contact your CTF administrator.",
         )
         return redirect(url_for("auth.login"))
 
-    redirect_url = "{endpoint}?response_type=code&client_id={client_id}&scope={scope}&state={state}".format(
-        endpoint=endpoint, client_id=client_id, scope=scope, state=session["nonce"]
-    )
+    redirect_url = f"https://{cognito_domain}/oauth2/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={scope}&state={session['nonce']}"
     return redirect(redirect_url)
 
 
@@ -471,42 +462,36 @@ def oauth_redirect():
         return redirect(url_for("auth.login"))
 
     if oauth_code:
-        url = (
-            get_app_config("OAUTH_TOKEN_ENDPOINT")
-            or get_config("oauth_token_endpoint")
-            or "https://auth.majorleaguecyber.org/oauth/token"
-        )
+        cognito_domain = get_config("cognito_domain")
+        client_id = get_config("cognito_app_client_id")
+        client_secret = get_config("cognito_app_client_secret")
+        redirect_uri = url_for("auth.oauth_redirect", _external=True)
 
-        client_id = get_app_config("OAUTH_CLIENT_ID") or get_config("oauth_client_id")
-        client_secret = get_app_config("OAUTH_CLIENT_SECRET") or get_config(
-            "oauth_client_secret"
-        )
-        headers = {"content-type": "application/x-www-form-urlencoded"}
+        token_url = f"https://{cognito_domain}/oauth2/token"
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
         data = {
-            "code": oauth_code,
+            "grant_type": "authorization_code",
             "client_id": client_id,
             "client_secret": client_secret,
-            "grant_type": "authorization_code",
+            "code": oauth_code,
+            "redirect_uri": redirect_uri,
         }
-        token_request = requests.post(url, data=data, headers=headers)
+        token_request = requests.post(token_url, data=data, headers=headers)
 
         if token_request.status_code == requests.codes.ok:
-            token = token_request.json()["access_token"]
-            user_url = (
-                get_app_config("OAUTH_API_ENDPOINT")
-                or get_config("oauth_api_endpoint")
-                or "https://api.majorleaguecyber.org/user"
+            tokens = token_request.json()
+            id_token = tokens["id_token"]
+
+            # Decode the ID token to get user information
+            cognito_client = boto3.client("cognito-idp")
+            user_info = cognito_client.get_user(AccessToken=id_token)
+
+            user_email = next(
+                (attr["Value"] for attr in user_info["UserAttributes"] if attr["Name"] == "email"), None
             )
-
-            headers = {
-                "Authorization": "Bearer " + str(token),
-                "Content-type": "application/json",
-            }
-            api_data = requests.get(url=user_url, headers=headers).json()
-
-            user_id = api_data["id"]
-            user_name = api_data["name"]
-            user_email = api_data["email"]
+            user_name = next(
+                (attr["Value"] for attr in user_info["UserAttributes"] if attr["Name"] == "name"), None
+            )
 
             user = Users.query.filter_by(email=user_email).first()
             if user is None:
@@ -520,68 +505,28 @@ def oauth_redirect():
                     )
 
                 # Check if we are allowing registration before creating users
-                if registration_visible() or mlc_registration():
+                if registration_visible():
                     user = Users(
                         name=user_name,
                         email=user_email,
-                        oauth_id=user_id,
                         verified=True,
                     )
                     db.session.add(user)
                     db.session.commit()
                 else:
-                    log("logins", "[{date}] {ip} - Public registration via MLC blocked")
+                    log("logins", "[{date}] {ip} - Public registration via Cognito blocked")
                     error_for(
                         endpoint="auth.login",
                         message="Public registration is disabled. Please try again later.",
                     )
                     return redirect(url_for("auth.login"))
 
-            if get_config("user_mode") == TEAMS_MODE and user.team_id is None:
-                team_id = api_data["team"]["id"]
-                team_name = api_data["team"]["name"]
-
-                team = Teams.query.filter_by(oauth_id=team_id).first()
-                if team is None:
-                    num_teams_limit = int(get_config("num_teams", default=0))
-                    num_teams = Teams.query.filter_by(
-                        banned=False, hidden=False
-                    ).count()
-                    if num_teams_limit and num_teams >= num_teams_limit:
-                        abort(
-                            403,
-                            description=f"Reached the maximum number of teams ({num_teams_limit}). Please join an existing team.",
-                        )
-
-                    team = Teams(name=team_name, oauth_id=team_id, captain_id=user.id)
-                    db.session.add(team)
-                    db.session.commit()
-                    clear_team_session(team_id=team.id)
-
-                team_size_limit = get_config("team_size", default=0)
-                if team_size_limit and len(team.members) >= team_size_limit:
-                    plural = "" if team_size_limit == 1 else "s"
-                    size_error = "Teams are limited to {limit} member{plural}.".format(
-                        limit=team_size_limit, plural=plural
-                    )
-                    error_for(endpoint="auth.login", message=size_error)
-                    return redirect(url_for("auth.login"))
-
-                team.members.append(user)
-                db.session.commit()
-
-            if user.oauth_id is None:
-                user.oauth_id = user_id
-                user.verified = True
-                db.session.commit()
-                clear_user_session(user_id=user.id)
-
             login_user(user)
 
             return redirect(url_for("challenges.listing"))
         else:
-            log("logins", "[{date}] {ip} - OAuth token retrieval failure")
-            error_for(endpoint="auth.login", message="OAuth token retrieval failure.")
+            log("logins", "[{date}] {ip} - Cognito token retrieval failure")
+            error_for(endpoint="auth.login", message="Cognito token retrieval failure.")
             return redirect(url_for("auth.login"))
     else:
         log("logins", "[{date}] {ip} - Received redirect without OAuth code")
