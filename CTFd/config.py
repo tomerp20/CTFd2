@@ -248,6 +248,11 @@ class ServerConfig(object):
             "pool_pre_ping": empty_str_cast(config_ini["optional"]["SQLALCHEMY_POOL_PRE_PING"], default=True),  # noqa: E131
         }
 
+    # === COGNITO ===
+    COGNITO_USER_POOL_ID: str = empty_str_cast(config_ini["cognito"]["COGNITO_USER_POOL_ID"])
+    COGNITO_CLIENT_ID: str = empty_str_cast(config_ini["cognito"]["COGNITO_CLIENT_ID"])
+    COGNITO_REGION: str = empty_str_cast(config_ini["cognito"]["COGNITO_REGION"]) or "us-east-1"
+
     # === OAUTH ===
     OAUTH_CLIENT_ID: str = empty_str_cast(config_ini["oauth"]["OAUTH_CLIENT_ID"])
     OAUTH_CLIENT_SECRET: str = empty_str_cast(config_ini["oauth"]["OAUTH_CLIENT_SECRET"])

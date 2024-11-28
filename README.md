@@ -70,6 +70,29 @@ If you prefer commercial support or have a special project, feel free to [contac
 
 Looking to use CTFd but don't want to deal with managing infrastructure? Check out [the CTFd website](https://ctfd.io/) for managed CTFd deployments.
 
+## Cognito Integration
+
+CTFd now supports integration with Amazon Cognito for user management. This allows you to leverage Cognito's robust authentication and user management features.
+
+### Configuration
+
+To set up Cognito integration, you need to configure the following settings in your `config.ini` file:
+
+```ini
+[cognito]
+COGNITO_USER_POOL_ID = your_cognito_user_pool_id
+COGNITO_CLIENT_ID = your_cognito_client_id
+COGNITO_REGION = your_cognito_region
+```
+
+- **COGNITO_USER_POOL_ID**: The ID of your Cognito User Pool.
+- **COGNITO_CLIENT_ID**: The Client ID for your Cognito application.
+- **COGNITO_REGION**: The AWS region where your Cognito User Pool is hosted.
+
+### User Management
+
+With Cognito integration, user creation, deletion, and authentication are managed through Amazon Cognito. Ensure that your Cognito settings are correctly configured to allow seamless user operations.
+
 ## MajorLeagueCyber
 
 CTFd is heavily integrated with [MajorLeagueCyber](https://majorleaguecyber.org/). MajorLeagueCyber (MLC) is a CTF stats tracker that provides event scheduling, team tracking, and single sign on for events.
